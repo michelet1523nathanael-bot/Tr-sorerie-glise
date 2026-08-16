@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<title>Trésorerie de l'église</title>
+
+<link rel="manifest" href="./manifest.json" />
+<meta name="theme-color" content="#152E28" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Trésorerie" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<link rel="icon" href="./icon-192.png" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/feather-icons"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+<style>
+  html, body { background: #F6F3EC; }
+  .ledger-serif { font-family: 'Fraunces', serif; }
+  .ledger-mono { font-variant-numeric: tabular-nums; font-family: 'IBM Plex Mono', monospace; }
+  body { font-family: 'Inter', sans-serif; }
+  .ink-underline { position: relative; }
+  .ink-underline::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: -8px; height: 3px;
+    background: linear-gradient(90deg, #C89B3C, transparent); opacity: 0.85; border-radius: 2px;
+    transform-origin: left; animation: draw 0.8s cubic-bezier(.22,1,.36,1);
+  }
+  @keyframes draw { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  @keyframes fadeInUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .tab-fade { animation: fadeInUp 0.28s ease-out; }
+  button { transition: transform 0.12s ease, opacity 0.12s ease, background 0.15s ease, box-shadow 0.15s ease; }
+  button:active { transform: scale(0.96); }
+  .chip:active { transform: scale(0.95); }
+  .row-hover:hover { background: rgba(21,46,40,0.02); }
+  input:focus, select:focus, button:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(46,138,114,0.25); }
+  .print-sheet { display: none; }
+  @media print {
+    body * { visibility: hidden; }
+    .print-sheet, .print-sheet * { visibility: visible; }
+    .print-sheet { display: block; position: absolute; top: 0; left: 0; width: 100%; padding: 24px; }
+    .no-print { display: none !important; }
+  }
+  #root { min-height: 100vh; }
+  #boot-error { display:none; padding: 24px; font-family: sans-serif; color:#C24B3F; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="boot-error">
+  <p style="font-weight:600;margin-bottom:8px;">L'application n'a pas pu se charger.</p>
+  <p style="font-size:14px;color:#333;">Vérifie ta connexion internet et recharge la page. Si le problème persiste, contacte la personne qui t'a fourni cette appli.</p>
+</div>
+
+<script>
+  window.addEventListener('error', function(e) {
+    var root = document.getElementById('root');
+    var err = document.getElementById('boot-error');
+    if (root && !root.hasChildNodes()) {
+      root.style.display = 'none';
+      if (err) err.style.display = 'block';
+    }
+  });
+</script>
+
+<script>
+"use strict";
+const { useState, useEffect, useMemo, useCallback } = React;
+const GREEN = "#152E28";
+const GREEN_SOFT = "#1D3F37";
+const GREEN_MID = "#2E8A72";
+const GOLD = "#C89B3C";
+const RED = "#C24B3F";
+const PAPER = "#F6F3EC";
+const CARD = "#FFFFFF";
+const INK_MUTE = "#748078";
+const INK = "#182420";
+const HAIRLINE = "rgba(21,46,40,0.08)";
+const SHADOW = "0 1px 2px rgba(21,46,40,0.05), 0 6px 16px rgba(21,46,40,0.06)";
+const SHADOW_LG = "0 4px 10px rgba(21,46,40,0.08), 0 12px 28px rgba(21,46,40,0.10)";
+const MONTH_SHORT = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"];
+const STORAGE_TX = "church-ledger:transactions";
+const STORAGE_CAT = "church-ledger:categories";
+const FEATHER_MAP = {
+    coins: "dollar-sign", handHeart: "heart", gift: "gift", users: "users",
+    wrench: "tool", zap: "zap", banknote: "credit-card", box: "package",
+    calendar: "calendar", more: "more-horizontal", drink: "coffee", book: "book",
+};
+const ICON_KEYS = Object.keys(FEATHER_MAP).concat(["church"]);
+function Icon({ name, size = 16, color = "currentColor", strokeWidth = 2 }) {
+    if (!window.feather || !window.feather.icons[name])
+        return null;
+    const svg = window.feather.icons[name].toSvg({ width: size, height: size, color, "stroke-width": strokeWidth });
+    return React.createElement("span", { style: { display: "inline-flex", lineHeight: 0 }, dangerouslySetInnerHTML: { __html: svg } });
+}
+function ChurchIcon({ size = 16, color = "currentColor" }) {
+    return (React.createElement("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" },
+        React.createElement("path", { d: "M12 3v3" }),
+        React.createElement("path", { d: "M10.5 5h3" }),
+        React.createElement("path", { d: "M12 6l7 6h-2v9H7v-9H5l7-6z" }),
+        React.createElement("path", { d: "M10 21v-5h4v5" })));
+}
+function CatIcon({ iconKey, size = 14, color }) {
+    if (iconKey === "church")
+        return React.createElement(ChurchIcon, { size: size, color: color });
+    return React.createElement(Icon, { name: FEATHER_MAP[iconKey] || "more-horizontal", size: size, color: color });
+}
+const DEFAULT_CATEGORIES = {
+    recette: [
+        { id: "quetes", label: "Quêtes", icon: "coins" },
+        { id: "dimes", label: "Dîmes", icon: "handHeart" },
+        { id: "dons", label: "Dons", icon: "gift" },
+        { id: "missions_in", label: "Missions", icon: "users" },
+        { id: "culte_eglise", label: "Culte église", icon: "church" },
+        { id: "offrande_vendredi", label: "Offrande du vendredi", icon: "handHeart" },
+        { id: "offrande_volontaires", label: "Offrande volontaires", icon: "coins" },
+        { id: "boissons", label: "Boissons", icon: "drink" },
+        { id: "librairie", label: "Librairie", icon: "book" },
+        { id: "autre_recette", label: "Autre recette", icon: "more" },
+    ],
+    depense: [
+        { id: "entretien", label: "Entretien / Bâtiment", icon: "wrench" },
+        { id: "charges", label: "Charges", icon: "zap" },
+        { id: "missions_out", label: "Missions", icon: "users" },
+        { id: "salaires", label: "Salaires / Indemnités", icon: "banknote" },
+        { id: "materiel", label: "Matériel / Fournitures", icon: "box" },
+        { id: "evenements", label: "Événements", icon: "calendar" },
+        { id: "autre_depense", label: "Autre dépense", icon: "more" },
+    ],
+};
+function uid() { return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
+function formatEUR(n) {
+    const sign = n < 0 ? "-" : "";
+    const abs = Math.abs(n);
+    return `${sign}${abs.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+}
+function ymOf(d) { return d.slice(0, 7); }
+function monthLabel(ym) {
+    const [y, m] = ym.split("-").map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+}
+function quarterOf(ym) {
+    const [y, m] = ym.split("-").map(Number);
+    return { year: y, q: Math.floor((m - 1) / 3) + 1 };
+}
+function quarterMonths(year, q) {
+    const start = (q - 1) * 3 + 1;
+    return [0, 1, 2].map((i) => `${year}-${String(start + i).padStart(2, "0")}`);
+}
+function monthsOfYear(y) { return Array.from({ length: 12 }, (_, i) => `${y}-${String(i + 1).padStart(2, "0")}`); }
+function shiftMonth(ym, d) {
+    const [y, m] = ym.split("-").map(Number);
+    const nd = new Date(y, m - 1 + d, 1);
+    return `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, "0")}`;
+}
+function shiftQuarter(year, q, d) {
+    let total = year * 4 + (q - 1) + d;
+    return { year: Math.floor(total / 4), q: (total % 4) + 1 };
+}
+function todayISO() { return new Date().toISOString().slice(0, 10); }
+function loadLocal(key, fallback) {
+    try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+    }
+    catch (e) {
+        return fallback;
+    }
+}
+function saveLocal(key, value) {
+    try {
+        localStorage.setItem(key, JSON.stringify(value));
+        return true;
+    }
+    catch (e) {
+        return false;
+    }
+}
+function downloadCSV(periodTx, catById, periodLabel) {
+    const header = "Date;Type;Categorie;Description;Montant (EUR)";
+    const rows = [...periodTx].sort((a, b) => a.date.localeCompare(b.date)).map((t) => {
+        const cat = (catById[t.category] || {}).label || "Autre";
+        const desc = (t.label || "").replace(/;/g, ",");
+        return `${t.date};${t.type === "recette" ? "Recette" : "Depense"};${cat};${desc};${t.amount.toFixed(2).replace(".", ",")}`;
+    });
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `tresorerie-${periodLabel.replace(/\s+/g, "-").toLowerCase()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+function ChurchLedger() {
+    const [transactions, setTransactions] = useState(() => loadLocal(STORAGE_TX, []));
+    const [categories, setCategories] = useState(() => loadLocal(STORAGE_CAT, DEFAULT_CATEGORIES));
+    const [storageOk, setStorageOk] = useState(true);
+    const [tab, setTab] = useState("registre");
+    const persistTx = useCallback((next) => { setTransactions(next); if (!saveLocal(STORAGE_TX, next))
+        setStorageOk(false); }, []);
+    const persistCat = useCallback((next) => { setCategories(next); if (!saveLocal(STORAGE_CAT, next))
+        setStorageOk(false); }, []);
+    const catById = useMemo(() => {
+        const map = {};
+        [...categories.recette, ...categories.depense].forEach((c) => (map[c.id] = c));
+        return map;
+    }, [categories]);
+    const sortedAll = useMemo(() => [...transactions].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.id.localeCompare(b.id))), [transactions]);
+    const balanceAsOf = useCallback((endDate) => {
+        let bal = 0;
+        for (const t of sortedAll) {
+            if (t.date <= endDate)
+                bal += t.type === "recette" ? t.amount : -t.amount;
+            else
+                break;
+        }
+        return bal;
+    }, [sortedAll]);
+    const totalBalance = useMemo(() => transactions.reduce((s, t) => s + (t.type === "recette" ? t.amount : -t.amount), 0), [transactions]);
+    return (React.createElement("div", { style: { background: PAPER, color: INK, minHeight: "100vh", paddingBottom: 96 } },
+        React.createElement("div", { className: "max-w-md mx-auto px-5 pt-8" },
+            React.createElement(Header, { totalBalance: totalBalance, storageOk: storageOk }),
+            React.createElement("div", { key: tab, className: "tab-fade" },
+                tab === "registre" && React.createElement(Registre, { transactions: transactions, setTransactions: persistTx, categories: categories, catById: catById }),
+                tab === "vue" && React.createElement(VueEnsemble, { transactions: transactions, catById: catById, balanceAsOf: balanceAsOf }),
+                tab === "categories" && React.createElement(CategoriesManager, { categories: categories, setCategories: persistCat, transactions: transactions, setTransactions: persistTx }))),
+        React.createElement(BottomNav, { tab: tab, setTab: setTab })));
+}
+function Header({ totalBalance, storageOk }) {
+    const isPositive = totalBalance >= 0;
+    return (React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "flex items-center gap-2 mb-6" },
+            React.createElement("div", { className: "flex items-center justify-center rounded-xl", style: { width: 28, height: 28, background: `linear-gradient(135deg, ${GREEN}, ${GREEN_MID})`, boxShadow: SHADOW } },
+                React.createElement(ChurchIcon, { size: 15, color: PAPER })),
+            React.createElement("span", { className: "text-xs tracking-[0.18em] uppercase font-medium", style: { color: INK_MUTE } }, "Tr\u00E9sorerie de l'\u00E9glise")),
+        React.createElement("div", { className: "rounded-[28px] px-6 py-8 mb-6 relative overflow-hidden", style: { background: `linear-gradient(150deg, ${GREEN} 0%, ${GREEN_SOFT} 60%, ${GREEN_MID} 130%)`, color: PAPER, boxShadow: SHADOW_LG } },
+            React.createElement("div", { className: "absolute -right-10 -top-10 rounded-full", style: { width: 160, height: 160, background: "radial-gradient(circle, rgba(200,155,60,0.18), transparent 70%)" } }),
+            React.createElement("p", { className: "text-xs uppercase tracking-[0.16em] opacity-70 mb-2 relative" }, "Solde global"),
+            React.createElement("p", { className: "ledger-serif ink-underline inline-block text-[2.6rem] leading-none relative", style: { color: isPositive ? "#F3EFE1" : "#F0B3A6" } }, formatEUR(totalBalance))),
+        !storageOk && React.createElement("p", { className: "text-xs mb-4", style: { color: RED } }, "La sauvegarde a \u00E9chou\u00E9 \u2014 v\u00E9rifie l'espace de stockage de ton navigateur.")));
+}
+function BottomNav({ tab, setTab }) {
+    const items = [
+        { id: "registre", label: "Registre", icon: "book-open" },
+        { id: "vue", label: "Aperçu", icon: "grid" },
+        { id: "categories", label: "Catégories", icon: "tag" },
+    ];
+    return (React.createElement("div", { className: "no-print fixed bottom-0 left-0 right-0 flex justify-center px-4 pb-4", style: { paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 14px)" } },
+        React.createElement("div", { className: "max-w-md w-full flex rounded-2xl px-2 py-2", style: { background: CARD, boxShadow: SHADOW_LG } }, items.map((it) => {
+            const active = tab === it.id;
+            return (React.createElement("button", { key: it.id, onClick: () => setTab(it.id), className: "flex-1 flex flex-col items-center gap-1 py-2 rounded-xl", style: { background: active ? "rgba(46,138,114,0.10)" : "transparent", color: active ? GREEN_MID : "#A9B3AC" } },
+                React.createElement(Icon, { name: it.icon, size: 19, strokeWidth: active ? 2.2 : 1.75 }),
+                React.createElement("span", { className: "text-[10px]", style: { fontWeight: active ? 600 : 500 } }, it.label)));
+        }))));
+}
+function EmptyState({ text }) {
+    return (React.createElement("div", { className: "rounded-3xl px-5 py-10 text-center mb-4 flex flex-col items-center gap-3", style: { background: CARD, boxShadow: SHADOW } },
+        React.createElement("div", { className: "flex items-center justify-center rounded-full", style: { width: 44, height: 44, background: PAPER, color: INK_MUTE } },
+            React.createElement(Icon, { name: "inbox", size: 20 })),
+        React.createElement("p", { className: "text-sm max-w-[220px]", style: { color: INK_MUTE } }, text)));
+}
+function Registre({ transactions, setTransactions, categories, catById }) {
+    var _a;
+    const [type, setType] = useState("depense");
+    const [amount, setAmount] = useState("");
+    const [category, setCategory] = useState(((_a = categories.depense[0]) === null || _a === void 0 ? void 0 : _a.id) || "");
+    const [label, setLabel] = useState("");
+    const [date, setDate] = useState(todayISO());
+    const [error, setError] = useState("");
+    const [editingId, setEditingId] = useState(null);
+    const [confirmId, setConfirmId] = useState(null);
+    const [sortBy, setSortBy] = useState("date_desc");
+    const [filterType, setFilterType] = useState("tous");
+    const [filterCat, setFilterCat] = useState("toutes");
+    useEffect(() => {
+        var _a;
+        const list = categories[type] || [];
+        if (!list.find((c) => c.id === category))
+            setCategory(((_a = list[0]) === null || _a === void 0 ? void 0 : _a.id) || "");
+    }, [type, categories]);
+    const resetForm = () => { setEditingId(null); setType("depense"); setAmount(""); setLabel(""); setDate(todayISO()); setError(""); };
+    const startEdit = (t) => {
+        setConfirmId(null);
+        setEditingId(t.id);
+        setType(t.type);
+        setAmount(String(t.amount).replace(".", ","));
+        setCategory(t.category);
+        setLabel(t.label);
+        setDate(t.date);
+        setError("");
+    };
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        const value = parseFloat(String(amount).replace(",", "."));
+        if (!value || value <= 0) {
+            setError("Indique un montant valide.");
+            return;
+        }
+        if (!category) {
+            setError("Choisis une catégorie.");
+            return;
+        }
+        setError("");
+        if (editingId) {
+            setTransactions(transactions.map((t) => (t.id === editingId ? { ...t, type, amount: Math.round(value * 100) / 100, category, label: label.trim(), date } : t)));
+        }
+        else {
+            setTransactions([{ id: uid(), type, amount: Math.round(value * 100) / 100, category, label: label.trim(), date }, ...transactions]);
+        }
+        resetForm();
+    };
+    const performDelete = (id) => {
+        setTransactions(transactions.filter((t) => t.id !== id));
+        setConfirmId(null);
+        if (editingId === id)
+            resetForm();
+    };
+    const allCatOptions = useMemo(() => [...categories.recette, ...categories.depense], [categories]);
+    const filtered = useMemo(() => {
+        let list = [...transactions];
+        if (filterType !== "tous")
+            list = list.filter((t) => t.type === filterType);
+        if (filterCat !== "toutes")
+            list = list.filter((t) => t.category === filterCat);
+        list.sort((a, b) => {
+            if (sortBy === "date_desc")
+                return b.date.localeCompare(a.date) || b.id.localeCompare(a.id);
+            if (sortBy === "date_asc")
+                return a.date.localeCompare(b.date) || a.id.localeCompare(b.id);
+            if (sortBy === "montant_desc")
+                return b.amount - a.amount;
+            if (sortBy === "montant_asc")
+                return a.amount - b.amount;
+            return 0;
+        });
+        return list;
+    }, [transactions, filterType, filterCat, sortBy]);
+    return (React.createElement(React.Fragment, null,
+        React.createElement("form", { onSubmit: handleSubmit, className: "rounded-3xl p-5 mb-6", style: { background: CARD, boxShadow: SHADOW, border: editingId ? `1.5px solid ${GOLD}` : "1.5px solid transparent" } },
+            editingId && (React.createElement("div", { className: "flex items-center justify-between mb-4 px-3 py-2 rounded-xl", style: { background: "rgba(200,155,60,0.12)" } },
+                React.createElement("span", { className: "text-xs font-semibold", style: { color: "#8A6A1F" } }, "Modification d'une \u00E9criture"),
+                React.createElement("button", { type: "button", onClick: resetForm, className: "p-1 rounded-md", style: { color: "#8A6A1F" } },
+                    React.createElement(Icon, { name: "x", size: 14 })))),
+            React.createElement("div", { className: "flex rounded-xl overflow-hidden mb-4 p-1", style: { background: PAPER } },
+                React.createElement("button", { type: "button", onClick: () => setType("depense"), className: "flex-1 py-2 rounded-lg text-sm font-semibold", style: { background: type === "depense" ? RED : "transparent", color: type === "depense" ? CARD : INK_MUTE, boxShadow: type === "depense" ? SHADOW : "none" } }, "D\u00E9pense"),
+                React.createElement("button", { type: "button", onClick: () => setType("recette"), className: "flex-1 py-2 rounded-lg text-sm font-semibold", style: { background: type === "recette" ? GREEN_MID : "transparent", color: type === "recette" ? CARD : INK_MUTE, boxShadow: type === "recette" ? SHADOW : "none" } }, "Recette")),
+            React.createElement("div", { className: "flex gap-3 mb-3" },
+                React.createElement("div", { className: "flex-1" },
+                    React.createElement("label", { className: "block text-xs mb-1.5 font-medium", style: { color: INK_MUTE } }, "Montant"),
+                    React.createElement("div", { className: "flex items-center rounded-xl px-3", style: { background: PAPER } },
+                        React.createElement("input", { type: "text", inputMode: "decimal", placeholder: "0,00", value: amount, onChange: (e) => setAmount(e.target.value), className: "ledger-mono w-full py-2.5 bg-transparent text-sm outline-none" }),
+                        React.createElement("span", { className: "text-sm font-medium", style: { color: INK_MUTE } }, "\u20AC"))),
+                React.createElement("div", { className: "flex-1" },
+                    React.createElement("label", { className: "block text-xs mb-1.5 font-medium", style: { color: INK_MUTE } }, "Date"),
+                    React.createElement("input", { type: "date", value: date, onChange: (e) => setDate(e.target.value), className: "w-full py-2.5 px-3 rounded-xl text-sm", style: { background: PAPER, border: "none" } }))),
+            React.createElement("div", { className: "mb-3" },
+                React.createElement("label", { className: "block text-xs mb-1.5 font-medium", style: { color: INK_MUTE } }, "Cat\u00E9gorie"),
+                React.createElement("div", { className: "flex flex-wrap gap-2" }, (categories[type] || []).map((c) => {
+                    const active = category === c.id;
+                    return (React.createElement("button", { type: "button", key: c.id, onClick: () => setCategory(c.id), className: "chip flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium", style: { background: active ? GREEN : PAPER, color: active ? PAPER : "#3D4F45", boxShadow: active ? SHADOW : "none" } },
+                        React.createElement(CatIcon, { iconKey: c.icon, size: 13 }),
+                        " ",
+                        c.label));
+                }))),
+            React.createElement("div", { className: "mb-4" },
+                React.createElement("label", { className: "block text-xs mb-1.5 font-medium", style: { color: INK_MUTE } }, "Description (facultatif)"),
+                React.createElement("input", { type: "text", placeholder: "Ex. qu\u00EAte du dimanche, facture EDF...", value: label, onChange: (e) => setLabel(e.target.value), className: "w-full py-2.5 px-3 rounded-xl text-sm", style: { background: PAPER, border: "none" } })),
+            error && React.createElement("p", { className: "text-xs mb-3 font-medium", style: { color: RED } }, error),
+            React.createElement("div", { className: "flex gap-2" },
+                React.createElement("button", { type: "submit", className: "flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold", style: { background: editingId ? `linear-gradient(135deg, ${GOLD}, #A67F2E)` : `linear-gradient(135deg, ${GREEN_MID}, ${GREEN})`, color: CARD, boxShadow: SHADOW } },
+                    React.createElement(Icon, { name: editingId ? "check" : "plus", size: 16, color: CARD }),
+                    editingId ? "Enregistrer les modifications" : "Ajouter au registre"),
+                editingId && React.createElement("button", { type: "button", onClick: resetForm, className: "px-4 py-3 rounded-xl text-sm font-medium", style: { background: PAPER, color: INK_MUTE } }, "Annuler"))),
+        React.createElement("div", { className: "flex items-center justify-between mb-3" },
+            React.createElement("p", { className: "ledger-serif text-xl font-medium", style: { color: GREEN } }, "Registre"),
+            React.createElement("span", { className: "text-xs font-medium", style: { color: INK_MUTE } },
+                filtered.length,
+                " \u00E9criture",
+                filtered.length > 1 ? "s" : "")),
+        React.createElement("div", { className: "flex gap-2 mb-4 overflow-x-auto pb-1" },
+            React.createElement("select", { value: filterType, onChange: (e) => setFilterType(e.target.value), className: "text-xs font-medium px-3 py-2 rounded-xl shrink-0", style: { background: CARD, boxShadow: SHADOW, border: "none", color: INK } },
+                React.createElement("option", { value: "tous" }, "Tous types"),
+                React.createElement("option", { value: "recette" }, "Recettes"),
+                React.createElement("option", { value: "depense" }, "D\u00E9penses")),
+            React.createElement("select", { value: filterCat, onChange: (e) => setFilterCat(e.target.value), className: "text-xs font-medium px-3 py-2 rounded-xl shrink-0", style: { background: CARD, boxShadow: SHADOW, border: "none", color: INK } },
+                React.createElement("option", { value: "toutes" }, "Toutes cat\u00E9gories"),
+                allCatOptions.map((c) => React.createElement("option", { key: c.id, value: c.id }, c.label))),
+            React.createElement("select", { value: sortBy, onChange: (e) => setSortBy(e.target.value), className: "text-xs font-medium px-3 py-2 rounded-xl shrink-0", style: { background: CARD, boxShadow: SHADOW, border: "none", color: INK } },
+                React.createElement("option", { value: "date_desc" }, "Date (r\u00E9cent)"),
+                React.createElement("option", { value: "date_asc" }, "Date (ancien)"),
+                React.createElement("option", { value: "montant_desc" }, "Montant (haut)"),
+                React.createElement("option", { value: "montant_asc" }, "Montant (bas)"))),
+        filtered.length === 0 ? React.createElement(EmptyState, { text: "Aucune \u00E9criture ne correspond. Ajuste les filtres ou ajoute une \u00E9criture." }) : (React.createElement("div", { className: "rounded-3xl overflow-hidden", style: { background: CARD, boxShadow: SHADOW } }, filtered.map((t, i) => {
+            const cat = catById[t.category] || { label: "Autre", icon: "more" };
+            const isConfirming = confirmId === t.id;
+            return (React.createElement("div", { key: t.id, className: "row-hover flex items-center gap-3 px-4", style: { height: 60, borderBottom: i < filtered.length - 1 ? `1px solid ${HAIRLINE}` : "none", background: editingId === t.id ? "rgba(200,155,60,0.06)" : undefined } },
+                React.createElement("div", { className: "flex items-center justify-center rounded-full shrink-0", style: { width: 32, height: 32, background: t.type === "recette" ? "rgba(46,138,114,0.12)" : "rgba(194,75,63,0.10)", color: t.type === "recette" ? GREEN_MID : RED } },
+                    React.createElement(CatIcon, { iconKey: cat.icon, size: 14 })),
+                React.createElement("div", { className: "flex-1 min-w-0" },
+                    React.createElement("p", { className: "text-sm truncate font-medium" }, t.label || cat.label),
+                    React.createElement("p", { className: "text-xs", style: { color: INK_MUTE } },
+                        cat.label,
+                        " \u00B7 ",
+                        new Date(t.date + "T00:00:00").toLocaleDateString("fr-FR"))),
+                !isConfirming && React.createElement("p", { className: "ledger-mono text-sm font-medium shrink-0", style: { color: t.type === "recette" ? GREEN_MID : RED } },
+                    t.type === "recette" ? "+" : "-",
+                    formatEUR(t.amount)),
+                isConfirming ? (React.createElement("div", { className: "flex items-center gap-1 shrink-0" },
+                    React.createElement("span", { className: "text-xs font-medium mr-1", style: { color: RED } }, "Supprimer ?"),
+                    React.createElement("button", { onClick: () => performDelete(t.id), className: "p-1.5 rounded-md", style: { background: RED, color: CARD } },
+                        React.createElement(Icon, { name: "check", size: 13, color: CARD })),
+                    React.createElement("button", { onClick: () => setConfirmId(null), className: "p-1.5 rounded-md", style: { background: PAPER, color: INK_MUTE } },
+                        React.createElement(Icon, { name: "x", size: 13 })))) : (React.createElement("div", { className: "flex items-center gap-0.5 shrink-0" },
+                    React.createElement("button", { onClick: () => startEdit(t), className: "p-1.5 rounded-md", style: { color: "#B7C0BA" } },
+                        React.createElement(Icon, { name: "edit-2", size: 13 })),
+                    React.createElement("button", { onClick: () => setConfirmId(t.id), className: "p-1.5 rounded-md", style: { color: "#C3BFA9" } },
+                        React.createElement(Icon, { name: "trash-2", size: 14 }))))));
+        })))));
+}
+function StatCard({ label, value, color, iconName }) {
+    return (React.createElement("div", { className: "rounded-3xl px-4 py-3.5", style: { background: CARD, boxShadow: SHADOW } },
+        React.createElement("div", { className: "flex items-center gap-1.5 mb-1.5" },
+            React.createElement("div", { className: "flex items-center justify-center rounded-full", style: { width: 22, height: 22, background: `${color}1A`, color } },
+                React.createElement(Icon, { name: iconName, size: 12, color: color })),
+            React.createElement("span", { className: "text-xs font-medium", style: { color: INK_MUTE } }, label)),
+        React.createElement("p", { className: "ledger-mono text-base font-medium", style: { color } }, value)));
+}
+function VueEnsemble({ transactions, catById, balanceAsOf }) {
+    const [mode, setMode] = useState("mois");
+    const [ym, setYm] = useState(ymOf(todayISO()));
+    const [annee, setAnnee] = useState(new Date().getFullYear());
+    let periodMonths, periodLabel;
+    if (mode === "mois") {
+        periodMonths = [ym];
+        periodLabel = monthLabel(ym);
+    }
+    else if (mode === "trimestre") {
+        const { year, q } = quarterOf(ym);
+        periodMonths = quarterMonths(year, q);
+        periodLabel = `T${q} ${year}`;
+    }
+    else {
+        periodMonths = monthsOfYear(annee);
+        periodLabel = `Année ${annee}`;
+    }
+    const periodTx = useMemo(() => transactions.filter((t) => periodMonths.includes(ymOf(t.date))), [transactions, periodMonths]);
+    const totalIn = periodTx.filter((t) => t.type === "recette").reduce((s, t) => s + t.amount, 0);
+    const totalOut = periodTx.filter((t) => t.type === "depense").reduce((s, t) => s + t.amount, 0);
+    const net = totalIn - totalOut;
+    const periodEndDate = useMemo(() => {
+        const lastYm = periodMonths[periodMonths.length - 1];
+        const [y, m] = lastYm.split("-").map(Number);
+        const lastDay = new Date(y, m, 0).getDate();
+        return `${lastYm}-${String(lastDay).padStart(2, "0")}`;
+    }, [periodMonths]);
+    const cumulBalance = balanceAsOf(periodEndDate);
+    const breakdown = useMemo(() => {
+        const byCat = {};
+        periodTx.forEach((t) => { const key = `${t.type}:${t.category}`; byCat[key] = (byCat[key] || 0) + t.amount; });
+        return Object.entries(byCat).map(([key, amount]) => {
+            const [type, catId] = key.split(":");
+            const cat = catById[catId] || { label: "Autre", icon: "more" };
+            return { type, catId, label: cat.label, icon: cat.icon, amount };
+        }).sort((a, b) => b.amount - a.amount);
+    }, [periodTx, catById]);
+    const maxBreakdown = Math.max(1, ...breakdown.map((b) => b.amount));
+    const chartData = useMemo(() => {
+        if (mode !== "annee")
+            return [];
+        return monthsOfYear(annee).map((mYm, idx) => {
+            const txs = transactions.filter((t) => ymOf(t.date) === mYm);
+            const rec = txs.filter((t) => t.type === "recette").reduce((s, t) => s + t.amount, 0);
+            const dep = txs.filter((t) => t.type === "depense").reduce((s, t) => s + t.amount, 0);
+            return { month: MONTH_SHORT[idx], net: Math.round((rec - dep) * 100) / 100 };
+        });
+    }, [mode, annee, transactions]);
+    const maxAbsNet = Math.max(1, ...chartData.map((d) => Math.abs(d.net)));
+    const goPrev = () => {
+        if (mode === "mois")
+            setYm(shiftMonth(ym, -1));
+        else if (mode === "trimestre") {
+            const { year, q } = quarterOf(ym);
+            const s = shiftQuarter(year, q, -1);
+            setYm(`${s.year}-${String((s.q - 1) * 3 + 1).padStart(2, "0")}`);
+        }
+        else
+            setAnnee((a) => a - 1);
+    };
+    const goNext = () => {
+        if (mode === "mois")
+            setYm(shiftMonth(ym, 1));
+        else if (mode === "trimestre") {
+            const { year, q } = quarterOf(ym);
+            const s = shiftQuarter(year, q, 1);
+            setYm(`${s.year}-${String((s.q - 1) * 3 + 1).padStart(2, "0")}`);
+        }
+        else
+            setAnnee((a) => a + 1);
+    };
+    return (React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "flex rounded-xl overflow-hidden mb-4 p-1 no-print", style: { background: CARD, boxShadow: SHADOW } }, [{ id: "mois", label: "Mois" }, { id: "trimestre", label: "Trimestre" }, { id: "annee", label: "Année" }].map((m) => (React.createElement("button", { key: m.id, onClick: () => setMode(m.id), className: "flex-1 py-2 rounded-lg text-sm font-semibold", style: { background: mode === m.id ? GREEN : "transparent", color: mode === m.id ? PAPER : INK_MUTE } }, m.label)))),
+        React.createElement("div", { className: "flex items-center justify-between mb-5 no-print px-1" },
+            React.createElement("button", { onClick: goPrev, className: "p-2 rounded-full", style: { color: GREEN_MID, background: CARD, boxShadow: SHADOW } },
+                React.createElement(Icon, { name: "chevron-left", size: 17 })),
+            React.createElement("p", { className: "ledger-serif text-xl font-medium capitalize", style: { color: GREEN } }, periodLabel),
+            React.createElement("button", { onClick: goNext, className: "p-2 rounded-full", style: { color: GREEN_MID, background: CARD, boxShadow: SHADOW } },
+                React.createElement(Icon, { name: "chevron-right", size: 17 }))),
+        net < 0 && (React.createElement("div", { className: "no-print rounded-2xl px-4 py-3 mb-4 flex items-center gap-2.5", style: { background: "rgba(194,75,63,0.08)" } },
+            React.createElement(Icon, { name: "alert-triangle", size: 16, color: RED }),
+            React.createElement("span", { className: "text-sm font-medium", style: { color: RED } },
+                mode === "annee" ? "Année" : mode === "trimestre" ? "Trimestre" : "Mois",
+                " d\u00E9ficitaire de ",
+                formatEUR(Math.abs(net))))),
+        React.createElement("div", { className: "grid grid-cols-2 gap-3 mb-3 no-print" },
+            React.createElement(StatCard, { label: "Recettes", value: formatEUR(totalIn), color: GREEN_MID, iconName: "arrow-up-right" }),
+            React.createElement(StatCard, { label: "D\u00E9penses", value: formatEUR(totalOut), color: RED, iconName: "arrow-down-right" })),
+        React.createElement("div", { className: "rounded-3xl px-5 py-4 mb-6 no-print flex items-center justify-between", style: { background: CARD, boxShadow: SHADOW } },
+            React.createElement("div", null,
+                React.createElement("p", { className: "text-xs font-medium", style: { color: INK_MUTE } }, "R\u00E9sultat net de la p\u00E9riode"),
+                React.createElement("p", { className: "ledger-mono text-lg font-medium", style: { color: net >= 0 ? GREEN_MID : RED } },
+                    net >= 0 ? "+" : "",
+                    formatEUR(net))),
+            React.createElement("div", { className: "text-right" },
+                React.createElement("p", { className: "text-xs font-medium", style: { color: INK_MUTE } }, "Solde cumul\u00E9 fin de p\u00E9riode"),
+                React.createElement("p", { className: "ledger-mono text-sm" }, formatEUR(cumulBalance)))),
+        mode === "annee" && (React.createElement("div", { className: "no-print mb-6" },
+            React.createElement("p", { className: "ledger-serif text-xl font-medium mb-3", style: { color: GREEN } }, "R\u00E9sultat net par mois"),
+            React.createElement("div", { className: "rounded-3xl p-5", style: { background: CARD, boxShadow: SHADOW } },
+                React.createElement("div", { className: "flex items-end gap-1.5", style: { height: 110 } }, chartData.map((d) => {
+                    const h = Math.max(3, (Math.abs(d.net) / maxAbsNet) * 90);
+                    const color = d.net >= 0 ? GREEN_MID : RED;
+                    return (React.createElement("div", { key: d.month, className: "flex-1 flex flex-col items-center justify-end h-full" },
+                        React.createElement("div", { style: { width: "100%", maxWidth: 18, height: `${h}px`, background: color, borderRadius: 4 }, title: `${d.month}: ${formatEUR(d.net)}` })));
+                })),
+                React.createElement("div", { className: "flex gap-1.5 mt-2" }, chartData.map((d) => React.createElement("span", { key: d.month, className: "flex-1 text-center text-[10px]", style: { color: INK_MUTE } }, d.month)))))),
+        React.createElement("p", { className: "ledger-serif text-xl font-medium mb-3 no-print", style: { color: GREEN } }, "R\u00E9partition par cat\u00E9gorie"),
+        breakdown.length === 0 ? React.createElement("div", { className: "no-print" },
+            React.createElement(EmptyState, { text: "Aucune \u00E9criture sur cette p\u00E9riode." })) : (React.createElement("div", { className: "rounded-3xl p-5 mb-6 no-print", style: { background: CARD, boxShadow: SHADOW } }, breakdown.map((b) => {
+            const color = b.type === "recette" ? GREEN_MID : RED;
+            return (React.createElement("div", { key: `${b.type}:${b.catId}`, className: "mb-3.5 last:mb-0" },
+                React.createElement("div", { className: "flex items-center justify-between mb-1.5" },
+                    React.createElement("span", { className: "flex items-center gap-1.5 text-sm font-medium" },
+                        React.createElement(CatIcon, { iconKey: b.icon, size: 13, color: color }),
+                        b.label),
+                    React.createElement("span", { className: "ledger-mono text-xs font-medium", style: { color } }, formatEUR(b.amount))),
+                React.createElement("div", { className: "h-2 rounded-full overflow-hidden", style: { background: PAPER } },
+                    React.createElement("div", { className: "h-2 rounded-full", style: { width: `${(b.amount / maxBreakdown) * 100}%`, background: `linear-gradient(90deg, ${color}, ${color}CC)` } }))));
+        }))),
+        React.createElement("div", { className: "flex gap-2 mb-4" },
+            React.createElement("button", { onClick: () => window.print(), className: "no-print flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold", style: { background: `linear-gradient(135deg, ${GREEN}, ${GREEN_SOFT})`, color: PAPER, boxShadow: SHADOW } },
+                React.createElement(Icon, { name: "printer", size: 16, color: PAPER }),
+                " Fiche PDF"),
+            React.createElement("button", { onClick: () => downloadCSV(periodTx, catById, periodLabel), className: "no-print flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-sm font-semibold", style: { background: CARD, color: GREEN, boxShadow: SHADOW } },
+                React.createElement(Icon, { name: "download", size: 16, color: GREEN }),
+                " CSV")),
+        React.createElement(PrintSheet, { periodLabel: periodLabel, totalIn: totalIn, totalOut: totalOut, net: net, cumulBalance: cumulBalance, breakdown: breakdown, periodTx: periodTx, catById: catById })));
+}
+function PrintSheet({ periodLabel, totalIn, totalOut, net, cumulBalance, breakdown, periodTx, catById }) {
+    const sortedTx = [...periodTx].sort((a, b) => a.date.localeCompare(b.date));
+    return (React.createElement("div", { className: "print-sheet", style: { fontFamily: "Georgia, serif", color: "#111" } },
+        React.createElement("h1", { style: { fontSize: 20, marginBottom: 2 } }, "Tr\u00E9sorerie de l'\u00E9glise"),
+        React.createElement("p", { style: { fontSize: 13, color: "#444", marginBottom: 16, textTransform: "capitalize" } },
+            "Fiche \u2014 ",
+            periodLabel,
+            " \u00B7 g\u00E9n\u00E9r\u00E9 le ",
+            new Date().toLocaleDateString("fr-FR")),
+        React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", marginBottom: 20, fontSize: 13 } },
+            React.createElement("tbody", null,
+                React.createElement("tr", null,
+                    React.createElement("td", { style: { padding: "4px 0" } }, "Total recettes"),
+                    React.createElement("td", { style: { textAlign: "right" } }, formatEUR(totalIn))),
+                React.createElement("tr", null,
+                    React.createElement("td", { style: { padding: "4px 0" } }, "Total d\u00E9penses"),
+                    React.createElement("td", { style: { textAlign: "right" } }, formatEUR(totalOut))),
+                React.createElement("tr", { style: { fontWeight: "bold", borderTop: "1px solid #999" } },
+                    React.createElement("td", { style: { padding: "4px 0" } }, "R\u00E9sultat net"),
+                    React.createElement("td", { style: { textAlign: "right" } }, formatEUR(net))),
+                React.createElement("tr", null,
+                    React.createElement("td", { style: { padding: "4px 0" } }, "Solde cumul\u00E9 fin de p\u00E9riode"),
+                    React.createElement("td", { style: { textAlign: "right" } }, formatEUR(cumulBalance))))),
+        React.createElement("h2", { style: { fontSize: 15, marginBottom: 8 } }, "R\u00E9partition par cat\u00E9gorie"),
+        React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", marginBottom: 20, fontSize: 12 } },
+            React.createElement("thead", null,
+                React.createElement("tr", { style: { borderBottom: "1px solid #999" } },
+                    React.createElement("th", { style: { textAlign: "left", padding: "4px 0" } }, "Cat\u00E9gorie"),
+                    React.createElement("th", { style: { textAlign: "left" } }, "Type"),
+                    React.createElement("th", { style: { textAlign: "right" } }, "Montant"))),
+            React.createElement("tbody", null, breakdown.map((b) => (React.createElement("tr", { key: `${b.type}:${b.catId}`, style: { borderBottom: "1px solid #eee" } },
+                React.createElement("td", { style: { padding: "3px 0" } }, b.label),
+                React.createElement("td", null, b.type === "recette" ? "Recette" : "Dépense"),
+                React.createElement("td", { style: { textAlign: "right" } }, formatEUR(b.amount))))))),
+        React.createElement("h2", { style: { fontSize: 15, marginBottom: 8 } }, "D\u00E9tail des \u00E9critures"),
+        React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 11 } },
+            React.createElement("thead", null,
+                React.createElement("tr", { style: { borderBottom: "1px solid #999" } },
+                    React.createElement("th", { style: { textAlign: "left", padding: "3px 0" } }, "Date"),
+                    React.createElement("th", { style: { textAlign: "left" } }, "Cat\u00E9gorie"),
+                    React.createElement("th", { style: { textAlign: "left" } }, "Description"),
+                    React.createElement("th", { style: { textAlign: "right" } }, "Montant"))),
+            React.createElement("tbody", null, sortedTx.map((t) => {
+                const cat = catById[t.category] || { label: "Autre" };
+                return (React.createElement("tr", { key: t.id, style: { borderBottom: "1px solid #eee" } },
+                    React.createElement("td", { style: { padding: "3px 0" } }, new Date(t.date + "T00:00:00").toLocaleDateString("fr-FR")),
+                    React.createElement("td", null, cat.label),
+                    React.createElement("td", null, t.label || "—"),
+                    React.createElement("td", { style: { textAlign: "right" } },
+                        t.type === "recette" ? "+" : "-",
+                        formatEUR(t.amount))));
+            })))));
+}
+function CategoriesManager({ categories, setCategories, transactions, setTransactions }) {
+    const [addingType, setAddingType] = useState(null);
+    const [newLabel, setNewLabel] = useState("");
+    const [newIcon, setNewIcon] = useState("more");
+    const [editingId, setEditingId] = useState(null);
+    const [editLabel, setEditLabel] = useState("");
+    const addCategory = (type) => {
+        const lbl = newLabel.trim();
+        if (!lbl)
+            return;
+        const id = `${type}_${uid()}`;
+        setCategories({ ...categories, [type]: [...categories[type], { id, label: lbl, icon: newIcon }] });
+        setNewLabel("");
+        setNewIcon("more");
+        setAddingType(null);
+    };
+    const startEdit = (c) => { setEditingId(c.id); setEditLabel(c.label); };
+    const saveEdit = (type, id) => {
+        const lbl = editLabel.trim();
+        if (!lbl)
+            return;
+        setCategories({ ...categories, [type]: categories[type].map((c) => (c.id === id ? { ...c, label: lbl } : c)) });
+        setEditingId(null);
+    };
+    const deleteCategory = (type, id) => {
+        const fallback = type === "recette" ? "autre_recette" : "autre_depense";
+        const stillExists = categories[type].some((c) => c.id === fallback && c.id !== id);
+        setCategories({ ...categories, [type]: categories[type].filter((c) => c.id !== id) });
+        if (id !== fallback && stillExists)
+            setTransactions(transactions.map((t) => (t.category === id ? { ...t, category: fallback } : t)));
+    };
+    return (React.createElement(React.Fragment, null,
+        React.createElement("p", { className: "ledger-serif text-xl font-medium mb-1", style: { color: GREEN } }, "Cat\u00E9gories"),
+        React.createElement("p", { className: "text-xs mb-5", style: { color: INK_MUTE } }, "Personnalise librement les cat\u00E9gories de recettes et de d\u00E9penses."),
+        ["recette", "depense"].map((type) => (React.createElement("div", { key: type, className: "mb-6" },
+            React.createElement("p", { className: "text-xs uppercase tracking-wide font-semibold mb-2", style: { color: INK_MUTE } }, type === "recette" ? "Recettes" : "Dépenses"),
+            React.createElement("div", { className: "rounded-3xl overflow-hidden mb-2", style: { background: CARD, boxShadow: SHADOW } }, categories[type].map((c, i) => {
+                const isEditing = editingId === c.id;
+                return (React.createElement("div", { key: c.id, className: "row-hover flex items-center gap-3 px-4", style: { height: 54, borderBottom: i < categories[type].length - 1 ? `1px solid ${HAIRLINE}` : "none" } },
+                    React.createElement("div", { className: "flex items-center justify-center rounded-full shrink-0", style: { width: 28, height: 28, background: "rgba(21,46,40,0.06)", color: GREEN } },
+                        React.createElement(CatIcon, { iconKey: c.icon, size: 13 })),
+                    isEditing ? (React.createElement("input", { autoFocus: true, value: editLabel, onChange: (e) => setEditLabel(e.target.value), className: "flex-1 text-sm bg-transparent border-b py-1", style: { borderColor: GREEN_MID, outline: "none" } })) : React.createElement("span", { className: "flex-1 text-sm font-medium truncate" }, c.label),
+                    isEditing ? (React.createElement("button", { onClick: () => saveEdit(type, c.id), className: "p-1.5 rounded-md", style: { color: GREEN_MID } },
+                        React.createElement(Icon, { name: "check", size: 15 }))) : (React.createElement("button", { onClick: () => startEdit(c), className: "p-1.5 rounded-md", style: { color: "#B7C0BA" } },
+                        React.createElement(Icon, { name: "edit-2", size: 13 }))),
+                    React.createElement("button", { onClick: () => deleteCategory(type, c.id), className: "p-1.5 rounded-md", style: { color: "#C3BFA9" } },
+                        React.createElement(Icon, { name: "trash-2", size: 13 }))));
+            })),
+            addingType === type ? (React.createElement("div", { className: "rounded-3xl p-4", style: { background: CARD, boxShadow: SHADOW } },
+                React.createElement("input", { autoFocus: true, placeholder: "Nom de la cat\u00E9gorie", value: newLabel, onChange: (e) => setNewLabel(e.target.value), className: "w-full py-2.5 px-3 rounded-xl text-sm mb-3", style: { background: PAPER, border: "none" } }),
+                React.createElement("div", { className: "flex flex-wrap gap-2 mb-3" }, ICON_KEYS.map((key) => {
+                    const active = newIcon === key;
+                    return (React.createElement("button", { key: key, type: "button", onClick: () => setNewIcon(key), className: "chip flex items-center justify-center rounded-full", style: { width: 32, height: 32, background: active ? GREEN : PAPER, color: active ? PAPER : INK_MUTE, boxShadow: active ? SHADOW : "none" } },
+                        React.createElement(CatIcon, { iconKey: key, size: 14 })));
+                })),
+                React.createElement("div", { className: "flex gap-2" },
+                    React.createElement("button", { onClick: () => addCategory(type), className: "flex-1 py-2.5 rounded-xl text-sm font-semibold", style: { background: `linear-gradient(135deg, ${GREEN_MID}, ${GREEN})`, color: CARD, boxShadow: SHADOW } }, "Ajouter"),
+                    React.createElement("button", { onClick: () => { setAddingType(null); setNewLabel(""); }, className: "px-4 py-2.5 rounded-xl text-sm font-medium", style: { background: PAPER, color: INK_MUTE } },
+                        React.createElement(Icon, { name: "x", size: 15 }))))) : (React.createElement("button", { onClick: () => setAddingType(type), className: "flex items-center gap-1.5 text-sm font-medium px-3.5 py-2.5 rounded-xl", style: { color: GREEN_MID, background: CARD, boxShadow: SHADOW } },
+                React.createElement(Icon, { name: "plus", size: 14 }),
+                " Ajouter une cat\u00E9gorie")))))));
+}
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(React.createElement(ChurchLedger, null));
+</script>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function() {
+      navigator.serviceWorker.register("./sw.js").catch(function(){});
+    });
+  }
+</script>
+</body>
+</html>
