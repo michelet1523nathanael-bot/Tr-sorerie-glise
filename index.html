@@ -20,6 +20,7 @@
 <script src="https://unpkg.com/feather-icons"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
 <style>
   html, body { background: #F6F3EC; }
@@ -88,6 +89,13 @@ const STORAGE_TX = "church-ledger:transactions";
 const STORAGE_CAT = "church-ledger:categories";
 const STORAGE_THEME = "church-ledger:theme";
 const STORAGE_ACCOUNTS = "church-ledger:accounts";
+const STORAGE_LOCAL_CHANGED = "church-ledger:local-changed-at";
+const SUPABASE_URL = "https://tcjhwwxzttgrlnbljogm.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_ltaNA7nnVozoSCOcZIjg";
+const SUPABASE_ENABLED = SUPABASE_URL.startsWith("https://") && !SUPABASE_URL.includes("__") && !SUPABASE_PUBLISHABLE_KEY.includes("__");
+const cloudClient = SUPABASE_ENABLED && window.supabase
+    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } })
+    : null;
 const DEFAULT_ACCOUNTS = [
     { id: "general", label: "Compte général", icon: "home" },
     { id: "missions", label: "Offrandes missionnaires", icon: "users" },
@@ -193,6 +201,8 @@ function loadLocal(key, fallback) {
 function saveLocal(key, value) {
     try {
         localStorage.setItem(key, JSON.stringify(value));
+        if ([STORAGE_TX, STORAGE_CAT, STORAGE_THEME, STORAGE_ACCOUNTS].includes(key))
+            localStorage.setItem(STORAGE_LOCAL_CHANGED, String(Date.now()));
         return true;
     }
     catch (e) {
@@ -216,6 +226,200 @@ function downloadCSV(periodTx, catById, periodLabel) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+}
+function makeBackupSnapshot(transactions, categories, accounts, themeSettings) {
+    return {
+        version: 1,
+        savedAt: new Date().toISOString(),
+        transactions,
+        categories,
+        accounts,
+        themeSettings,
+    };
+}
+function isValidBackupSnapshot(value) {
+    return !!value && typeof value === "object" && Array.isArray(value.transactions) &&
+        !!value.categories && Array.isArray(value.categories.recette) && Array.isArray(value.categories.depense) &&
+        Array.isArray(value.accounts) && value.accounts.length > 0 && !!value.themeSettings;
+}
+function downloadBackupJSON(snapshot) {
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sauvegarde-tresorerie-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+function useCloudBackup({ transactions, categories, accounts, themeSettings, applySnapshot }) {
+    const [user, setUser] = useState(null);
+    const [ready, setReady] = useState(false);
+    const [status, setStatus] = useState(SUPABASE_ENABLED ? "disconnected" : "not-configured");
+    const [message, setMessage] = useState("");
+    const [lastSync, setLastSync] = useState(null);
+    const snapshotRef = useRef(makeBackupSnapshot(transactions, categories, accounts, themeSettings));
+    const applySnapshotRef = useRef(applySnapshot);
+    const initializedUserRef = useRef(null);
+    snapshotRef.current = makeBackupSnapshot(transactions, categories, accounts, themeSettings);
+    applySnapshotRef.current = applySnapshot;
+    const uploadSnapshot = useCallback(async (targetUser, snapshot) => {
+        if (!cloudClient || !targetUser)
+            return false;
+        setStatus("saving");
+        const payload = { ...snapshot, savedAt: new Date().toISOString() };
+        const { error } = await cloudClient.from("user_backups").upsert({
+            user_id: targetUser.id,
+            payload,
+            saved_at: payload.savedAt,
+        }, { onConflict: "user_id" });
+        if (error) {
+            setStatus("error");
+            setMessage("La sauvegarde en ligne a échoué. Les données restent conservées sur cet appareil.");
+            return false;
+        }
+        setStatus("saved");
+        setMessage("Sauvegarde en ligne à jour.");
+        setLastSync(payload.savedAt);
+        return true;
+    }, []);
+    const initializeForUser = useCallback(async (targetUser) => {
+        if (!cloudClient || !targetUser || initializedUserRef.current === targetUser.id)
+            return;
+        initializedUserRef.current = targetUser.id;
+        setReady(false);
+        setStatus("loading");
+        setMessage("Vérification de la sauvegarde en ligne...");
+        const { data, error } = await cloudClient.from("user_backups")
+            .select("payload,saved_at")
+            .eq("user_id", targetUser.id)
+            .maybeSingle();
+        if (error) {
+            setStatus("error");
+            setMessage("Impossible de lire la sauvegarde en ligne. Les données locales n'ont pas été modifiées.");
+            setReady(true);
+            return;
+        }
+        const localChanged = Number(localStorage.getItem(STORAGE_LOCAL_CHANGED) || 0);
+        const remoteTime = data ? Date.parse((data.payload && data.payload.savedAt) || data.saved_at || "") || 0 : 0;
+        if (data && isValidBackupSnapshot(data.payload) && remoteTime > localChanged) {
+            applySnapshotRef.current(data.payload);
+            setLastSync(data.saved_at || data.payload.savedAt);
+            setStatus("saved");
+            setMessage("La sauvegarde la plus récente a été restaurée sur cet appareil.");
+        }
+        else {
+            await uploadSnapshot(targetUser, snapshotRef.current);
+        }
+        setReady(true);
+    }, [uploadSnapshot]);
+    useEffect(() => {
+        if (!cloudClient)
+            return;
+        let active = true;
+        cloudClient.auth.getSession().then(({ data }) => {
+            if (!active)
+                return;
+            const nextUser = data.session && data.session.user;
+            setUser(nextUser || null);
+            if (nextUser)
+                initializeForUser(nextUser);
+        });
+        const { data: listener } = cloudClient.auth.onAuthStateChange((_event, session) => {
+            const nextUser = session && session.user;
+            setUser(nextUser || null);
+            if (nextUser)
+                setTimeout(() => initializeForUser(nextUser), 0);
+            else {
+                initializedUserRef.current = null;
+                setReady(false);
+                setStatus("disconnected");
+                setMessage("");
+            }
+        });
+        return () => {
+            active = false;
+            listener.subscription.unsubscribe();
+        };
+    }, [initializeForUser]);
+    useEffect(() => {
+        if (!user || !ready)
+            return;
+        const timer = setTimeout(() => uploadSnapshot(user, snapshotRef.current), 1500);
+        return () => clearTimeout(timer);
+    }, [transactions, categories, accounts, themeSettings, user, ready, uploadSnapshot]);
+    const signUp = useCallback(async (email, password) => {
+        if (!cloudClient)
+            return false;
+        setStatus("loading");
+        const { data, error } = await cloudClient.auth.signUp({
+            email,
+            password,
+            options: { emailRedirectTo: window.location.origin + window.location.pathname }
+        });
+        if (error) {
+            setStatus("error");
+            setMessage(error.message || "La création du compte a échoué.");
+            return false;
+        }
+        if (!data.session) {
+            setStatus("disconnected");
+            setMessage("Compte créé. Ouvrez l'e-mail de confirmation, puis revenez vous connecter.");
+        }
+        return true;
+    }, []);
+    const signIn = useCallback(async (email, password) => {
+        if (!cloudClient)
+            return false;
+        setStatus("loading");
+        const { error } = await cloudClient.auth.signInWithPassword({ email, password });
+        if (error) {
+            setStatus("error");
+            setMessage("Adresse e-mail ou mot de passe incorrect.");
+            return false;
+        }
+        return true;
+    }, []);
+    const signOut = useCallback(async () => {
+        if (cloudClient)
+            await cloudClient.auth.signOut();
+    }, []);
+    const backupNow = useCallback(async () => user ? uploadSnapshot(user, snapshotRef.current) : false, [user, uploadSnapshot]);
+    const restoreNow = useCallback(async () => {
+        if (!cloudClient || !user)
+            return false;
+        setStatus("loading");
+        const { data, error } = await cloudClient.from("user_backups").select("payload,saved_at").eq("user_id", user.id).maybeSingle();
+        if (error || !data || !isValidBackupSnapshot(data.payload)) {
+            setStatus("error");
+            setMessage("Aucune sauvegarde en ligne valide n'a été trouvée.");
+            return false;
+        }
+        applySnapshotRef.current(data.payload);
+        setLastSync(data.saved_at || data.payload.savedAt);
+        setStatus("saved");
+        setMessage("Sauvegarde restaurée.");
+        return true;
+    }, [user]);
+    const exportLocal = useCallback(() => downloadBackupJSON(snapshotRef.current), []);
+    const importLocal = useCallback(async (file) => {
+        try {
+            const parsed = JSON.parse(await file.text());
+            if (!isValidBackupSnapshot(parsed))
+                throw new Error("invalid");
+            applySnapshotRef.current(parsed);
+            setMessage("Le fichier de sauvegarde a été restauré.");
+            setStatus(user ? "saving" : "disconnected");
+            return true;
+        }
+        catch (_error) {
+            setStatus("error");
+            setMessage("Ce fichier n'est pas une sauvegarde valide de l'application.");
+            return false;
+        }
+    }, [user]);
+    return { configured: SUPABASE_ENABLED, user, status, message, lastSync, signUp, signIn, signOut, backupNow, restoreNow, exportLocal, importLocal };
 }
 // ---- Theme color helpers ----
 function hexToHsl(hex) {
@@ -329,6 +533,17 @@ function ChurchLedger() {
         setStorageOk(false); }, []);
     const persistAccounts = useCallback((next) => { setAccounts(next); if (!saveLocal(STORAGE_ACCOUNTS, next))
         setStorageOk(false); }, []);
+    const applySnapshot = useCallback((snapshot) => {
+        setTransactions(snapshot.transactions);
+        setCategories(snapshot.categories);
+        setAccounts(snapshot.accounts);
+        setThemeSettings(snapshot.themeSettings);
+        const ok = saveLocal(STORAGE_TX, snapshot.transactions) && saveLocal(STORAGE_CAT, snapshot.categories) &&
+            saveLocal(STORAGE_ACCOUNTS, snapshot.accounts) && saveLocal(STORAGE_THEME, snapshot.themeSettings);
+        if (!ok)
+            setStorageOk(false);
+    }, []);
+    const cloud = useCloudBackup({ transactions, categories, accounts, themeSettings, applySnapshot });
     useEffect(() => { document.title = themeSettings.title || DEFAULT_TITLE; }, [themeSettings.title]);
     useEffect(() => {
         if (accounts.length && !accounts.find((a) => a.id === activeAccount))
@@ -375,7 +590,7 @@ function ChurchLedger() {
                     tab === "registre" && React.createElement(Registre, { transactions: transactions, setTransactions: persistTx, categories: categories, catById: catById, activeAccount: activeAccount }),
                     tab === "vue" && React.createElement(VueEnsemble, { transactions: transactions, setTransactions: persistTx, categories: categories, catById: catById, balanceAsOf: balanceAsOf, activeAccount: activeAccount, accounts: accounts }),
                     tab === "categories" && React.createElement(CategoriesManager, { categories: categories, setCategories: persistCat, transactions: transactions, setTransactions: persistTx }),
-                    tab === "reglages" && React.createElement(Reglages, { themeSettings: themeSettings, setThemeSettings: persistTheme, accounts: accounts, setAccounts: persistAccounts, transactions: transactions, setTransactions: persistTx }))),
+                    tab === "reglages" && React.createElement(Reglages, { themeSettings: themeSettings, setThemeSettings: persistTheme, accounts: accounts, setAccounts: persistAccounts, transactions: transactions, setTransactions: persistTx, cloud: cloud }))),
             React.createElement(BottomNav, { tab: tab, setTab: setTab }))));
 }
 function Header({ accounts, balanceByAccount, activeAccount, setActiveAccount, storageOk }) {
@@ -983,7 +1198,69 @@ function CategoriesManager({ categories, setCategories, transactions, setTransac
                 " Ajouter une cat\u00E9gorie"))))))));
 }
 /* ---------------- Réglages ---------------- */
-function Reglages({ themeSettings, setThemeSettings, accounts, setAccounts, transactions, setTransactions }) {
+function CloudBackupCard({ cloud }) {
+    const theme = useContext(ThemeContext);
+    const [email, setEmail] = useState("");
+    const [password, setPassword] = useState("");
+    const [busy, setBusy] = useState(false);
+    const importInputRef = useRef(null);
+    const runAuth = async (mode) => {
+        const cleanEmail = email.trim();
+        if (!cleanEmail || password.length < 8)
+            return;
+        setBusy(true);
+        if (mode === "signup")
+            await cloud.signUp(cleanEmail, password);
+        else
+            await cloud.signIn(cleanEmail, password);
+        setBusy(false);
+        setPassword("");
+    };
+    const handleImport = async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file)
+            return;
+        if (window.confirm("Restaurer ce fichier remplacera les données actuellement visibles. Continuer ?"))
+            await cloud.importLocal(file);
+        e.target.value = "";
+    };
+    const restoreCloud = async () => {
+        if (window.confirm("Restaurer la sauvegarde en ligne remplacera les données actuellement visibles. Continuer ?"))
+            await cloud.restoreNow();
+    };
+    const statusLabel = cloud.status === "saving" ? "Sauvegarde en cours..." :
+        cloud.status === "loading" ? "Connexion..." : cloud.status === "saved" ? "Protégé et à jour" :
+            cloud.status === "error" ? "Attention requise" : "Non connecté";
+    return (React.createElement("div", { className: "rounded-3xl p-5 mb-5", style: { background: CARD, boxShadow: SHADOW } },
+        React.createElement("div", { className: "flex items-start gap-3 mb-3" },
+            React.createElement("div", { className: "flex items-center justify-center rounded-full shrink-0", style: { width: 34, height: 34, background: `${theme.greenMid}1F`, color: theme.greenMid } },
+                React.createElement(Icon, { name: "shield", size: 17 })),
+            React.createElement("div", { className: "flex-1" },
+                React.createElement("p", { className: "text-sm font-semibold", style: { color: theme.green } }, "Sauvegarde sécurisée"),
+                React.createElement("p", { className: "text-[11px]", style: { color: cloud.status === "error" ? RED : INK_MUTE } }, statusLabel))),
+        !cloud.configured ? (React.createElement("p", { className: "text-xs rounded-xl p-3", style: { background: PAPER, color: INK_MUTE } }, "La connexion sécurisée est en cours de configuration.")) : cloud.user ? (React.createElement(React.Fragment, null,
+            React.createElement("p", { className: "text-xs mb-3", style: { color: INK_MUTE } }, "Connecté : ", cloud.user.email || "compte personnel"),
+            cloud.message && React.createElement("p", { className: "text-xs rounded-xl p-3 mb-3", style: { background: PAPER, color: cloud.status === "error" ? RED : theme.green } }, cloud.message),
+            cloud.lastSync && React.createElement("p", { className: "text-[11px] mb-3", style: { color: INK_MUTE } }, "Dernière synchronisation : ", new Date(cloud.lastSync).toLocaleString("fr-FR")),
+            React.createElement("div", { className: "grid grid-cols-2 gap-2 mb-2" },
+                React.createElement("button", { onClick: cloud.backupNow, disabled: cloud.status === "saving" || cloud.status === "loading", className: "py-2.5 rounded-xl text-xs font-semibold", style: { background: theme.greenMid, color: CARD } }, "Sauvegarder maintenant"),
+                React.createElement("button", { onClick: restoreCloud, disabled: cloud.status === "loading", className: "py-2.5 rounded-xl text-xs font-semibold", style: { background: PAPER, color: theme.green } }, "Restaurer en ligne")),
+            React.createElement("button", { onClick: cloud.signOut, className: "text-xs underline", style: { color: INK_MUTE } }, "Se déconnecter"))) : (React.createElement(React.Fragment, null,
+            React.createElement("p", { className: "text-xs mb-3", style: { color: INK_MUTE } }, "Connectez-vous pour sauvegarder automatiquement et retrouver vos comptes sur un autre appareil."),
+            React.createElement("input", { type: "email", value: email, onChange: (e) => setEmail(e.target.value), placeholder: "Votre adresse e-mail", autoComplete: "email", className: "w-full py-2.5 px-3 rounded-xl text-sm mb-2", style: { background: PAPER, border: "none" } }),
+            React.createElement("input", { type: "password", value: password, onChange: (e) => setPassword(e.target.value), placeholder: "Mot de passe (8 caractères minimum)", autoComplete: "current-password", className: "w-full py-2.5 px-3 rounded-xl text-sm mb-2", style: { background: PAPER, border: "none" } }),
+            cloud.message && React.createElement("p", { className: "text-xs mb-2", style: { color: cloud.status === "error" ? RED : theme.green } }, cloud.message),
+            React.createElement("div", { className: "flex gap-2" },
+                React.createElement("button", { onClick: () => runAuth("signin"), disabled: busy || !email.trim() || password.length < 8, className: "flex-1 py-2.5 rounded-xl text-xs font-semibold", style: { background: theme.greenMid, color: CARD, opacity: busy || !email.trim() || password.length < 8 ? 0.5 : 1 } }, "Se connecter"),
+                React.createElement("button", { onClick: () => runAuth("signup"), disabled: busy || !email.trim() || password.length < 8, className: "flex-1 py-2.5 rounded-xl text-xs font-semibold", style: { background: PAPER, color: theme.green, opacity: busy || !email.trim() || password.length < 8 ? 0.5 : 1 } }, "Créer mon compte")))),
+        React.createElement("div", { className: "border-t mt-4 pt-4", style: { borderColor: HAIRLINE } },
+            React.createElement("p", { className: "text-[11px] mb-2", style: { color: INK_MUTE } }, "Copie de secours indépendante"),
+            React.createElement("div", { className: "flex gap-2" },
+                React.createElement("button", { onClick: cloud.exportLocal, className: "flex-1 py-2.5 rounded-xl text-xs font-semibold", style: { background: PAPER, color: theme.green } }, "Exporter un fichier"),
+                React.createElement("button", { onClick: () => importInputRef.current && importInputRef.current.click(), className: "flex-1 py-2.5 rounded-xl text-xs font-semibold", style: { background: PAPER, color: theme.green } }, "Restaurer un fichier"),
+                React.createElement("input", { ref: importInputRef, type: "file", accept: "application/json,.json", onChange: handleImport, className: "hidden" })))));
+}
+function Reglages({ themeSettings, setThemeSettings, accounts, setAccounts, transactions, setTransactions, cloud }) {
     const theme = useContext(ThemeContext);
     const [titleDraft, setTitleDraft] = useState(themeSettings.title || DEFAULT_TITLE);
     const [colorDraft, setColorDraft] = useState(themeSettings.baseColor || DEFAULT_BASE_COLOR);
@@ -1048,6 +1325,7 @@ function Reglages({ themeSettings, setThemeSettings, accounts, setAccounts, tran
     return (React.createElement(React.Fragment, null,
         React.createElement("p", { className: "ledger-serif text-xl font-medium mb-1", style: { color: theme.green } }, "R\u00E9glages"),
         React.createElement("p", { className: "text-xs mb-5", style: { color: INK_MUTE } }, "Personnalise le nom, le logo et la couleur principale de l'appli."),
+        React.createElement(CloudBackupCard, { cloud: cloud }),
         React.createElement("div", { className: "rounded-3xl p-5 mb-5", style: { background: CARD, boxShadow: SHADOW } },
             React.createElement("p", { className: "text-sm font-semibold mb-3", style: { color: theme.green } }, "Nom de l'appli"),
             React.createElement("div", { className: "flex gap-2" },
