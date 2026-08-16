@@ -1,4 +1,4 @@
-const CACHE_NAME = "tresorerie-eglise-v2";
+const CACHE_NAME = "tresorerie-eglise-v3";
 const SHELL = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -29,3 +29,4 @@ self.addEventListener("fetch", (event) => {
       .catch(() => caches.match(event.request))
   );
 });
+
